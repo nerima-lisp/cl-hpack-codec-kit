@@ -36,7 +36,7 @@
         system: pkgs: {
           default = pkgs.stdenvNoCC.mkDerivation {
             pname = "cl-hpack-codec-kit";
-            version = "0.1.0";
+            version = "1.0.0";
             src = self;
             dontBuild = true;
             installPhase = ''

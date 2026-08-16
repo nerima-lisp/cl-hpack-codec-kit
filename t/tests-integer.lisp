@@ -53,7 +53,26 @@
 
   (it "rejects an integer wider than thirty-two bits"
     (signals hpack-codec-error
-      (hpack-read-integer (octets #x1f #xff #xff #xff #xff #xff #xff) 0 5))))
+      (hpack-read-integer (octets #x1f #xff #xff #xff #xff #xff #xff) 0 5)))
+
+  (it "rejects an unbounded continuation sequence"
+    (signals hpack-codec-error
+      (hpack-read-integer (octets #x1f #x80 #x80 #x80 #x00)
+                          0
+                          5
+                          :maximum 31)))
+
+  (it "supports caller-supplied bounds beyond the RFC minimum"
+    (let ((value #x100000000)
+          (maximum #xffffffffffff))
+      (multiple-value-bind (decoded position)
+          (hpack-read-integer
+           (hpack-encode-integer value 5 0 :maximum maximum)
+           0
+           5
+           :maximum maximum)
+        (expect decoded :to-equalp value)
+        (expect (plusp position))))))
 
 (describe "prefixed integer round trip"
   (it "recovers every value it encodes across each prefix width"

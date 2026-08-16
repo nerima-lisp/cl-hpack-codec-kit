@@ -16,6 +16,16 @@
   (it "encodes the empty input as the empty output"
     (expect (hpack-huffman-encode (ascii "")) :to-equalp (octets))))
 
+(describe "hpack-huffman limits"
+  (it "enforces a zero-length input limit"
+    (signals hpack-limit-error
+      (hpack-huffman-encode (octets 0) :maximum-length 0)))
+
+  (it "enforces a zero-length output limit"
+    (let ((encoded (hpack-huffman-encode (octets 0))))
+      (signals hpack-limit-error
+        (hpack-huffman-decode encoded :maximum-length 0)))))
+
 (describe "hpack-huffman-decode"
   (it "recovers the RFC 7541 encoding of www.example.com"
     (expect (hpack-huffman-decode

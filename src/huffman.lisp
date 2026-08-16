@@ -34,11 +34,14 @@
 
 (defparameter *hpack-huffman-tree* (%hpack-build-huffman-tree))
 
-(defun hpack-huffman-decode (octets)
+(defun hpack-huffman-decode (octets &key maximum-length)
   "Decode OCTETS from the HPACK Huffman code table.
 
 Signals HPACK-CODEC-ERROR on an unknown code, on an embedded EOS symbol, and
 on padding that is longer than seven bits or is not a prefix of the EOS code."
+  (%hpack-ensure-octets octets :hpack-huffman)
+  (unless (null maximum-length)
+    (%hpack-ensure-limit maximum-length :huffman-maximum-length))
   (let ((node *hpack-huffman-tree*)
         (result (make-array 0 :element-type '(unsigned-byte 8)
                             :adjustable t :fill-pointer 0))
@@ -66,6 +69,12 @@ on padding that is longer than seven bits or is not a prefix of the EOS code."
                                      :message "An HPACK Huffman string contains EOS."
                                      :operation :hpack
                                      :detail :huffman-eos))
+                            (when (and (not (null maximum-length))
+                                       (>= (length result) maximum-length))
+                              (error 'hpack-limit-error
+                                     :message "The HPACK Huffman output exceeds its limit."
+                                     :operation :hpack-huffman
+                                     :detail maximum-length))
                             (vector-push-extend symbol result)
                             (setf node *hpack-huffman-tree*
                                   padding-bits 0
@@ -86,11 +95,19 @@ on padding that is longer than seven bits or is not a prefix of the EOS code."
       (replace copy result)
       copy)))
 
-(defun hpack-huffman-encode (octets)
+(defun hpack-huffman-encode (octets &key maximum-length)
   "Encode OCTETS with the HPACK Huffman code table.
 
 The accumulator is kept MSB-first and the final partial byte is padded with
 the prefix of the EOS code, as required by RFC 7541."
+  (%hpack-ensure-octets octets :hpack-huffman)
+  (when (and (not (null maximum-length))
+             (> (length octets) (%hpack-ensure-limit maximum-length
+                                                      :huffman-maximum-length)))
+    (error 'hpack-limit-error
+           :message "The HPACK Huffman input exceeds its limit."
+           :operation :hpack-huffman
+           :detail maximum-length))
   (let ((result (make-array 0 :element-type '(unsigned-byte 8)
                             :adjustable t :fill-pointer 0))
         (accumulator 0)

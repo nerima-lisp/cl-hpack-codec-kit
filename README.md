@@ -2,16 +2,11 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-cl-hpack-codec-kit is the pair of primitive codecs RFC 7541 defines and RFC
-9204 reuses: the canonical Huffman code for header strings, and the prefixed
-integer representation. It has no dependencies and knows nothing about HTTP
-messages, header tables, or connections.
-
-It exists because HPACK and QPACK share these two codecs but nothing else.
-HTTP/2's dynamic table and HTTP/3's are different designs, but both encode
-their lengths and indices as prefixed integers and both compress strings with
-the same Huffman table, so the codec belongs to neither and is depended on by
-both.
+`cl-hpack-codec-kit` is a dependency-free Common Lisp implementation of the
+HPACK header compression format specified by [RFC 7541](https://www.rfc-editor.org/rfc/rfc7541.html).
+It provides the static table, per-context dynamic tables, all four header-field
+representations, RFC Huffman strings, prefixed integers, stateful header-block
+encoders and decoders, protocol error conditions, and resource limits.
 
 ## Install
 
@@ -19,55 +14,102 @@ both.
 (asdf:load-system "cl-hpack-codec-kit")
 ```
 
-## Usage
+The test system is available as `cl-hpack-codec-kit/test` and uses `cl-weave`
+only for the test runner.
 
-Both codecs work on octet vectors and return fresh octet vectors.
+## Encode and decode a header block
+
+Headers may be supplied as string pairs, dotted pairs, three-element lists
+with an explicit representation, vectors, or `hpack-header` objects. Strings
+are converted to octets; octet vectors are accepted for arbitrary field bytes.
 
 ```lisp
-(hpack-codec:hpack-huffman-encode
- (map '(vector (unsigned-byte 8)) #'char-code "www.example.com"))
-;; => #(241 227 194 229 242 58 107 160 171 144 244 255)
-
-(hpack-codec:hpack-huffman-decode
- #(241 227 194 229 242 58 107 160 171 144 244 255))
-;; => #(119 119 119 46 101 120 97 109 112 108 101 46 99 111 109)
+(let* ((encoder (hpack-codec:make-hpack-encoder :huffman :auto))
+       (decoder (hpack-codec:make-hpack-decoder))
+       (block
+         (hpack-codec:hpack-encode-header-block
+          encoder
+          '((":method" . "GET")
+            (":path" . "/")
+            (":authority" . "www.example.com"))))
+       (headers (hpack-codec:hpack-decode-header-block decoder block)))
+  headers)
 ```
 
-A prefixed integer carries its low bits in the first octet alongside caller
-supplied flag bits, continuing over further octets when the value does not
-fit. `hpack-encode-integer` takes the value, the prefix width, and the flag
-bits; `hpack-read-integer` returns the value and the position just past it.
+The encoder and decoder retain their own dynamic-table state between blocks.
+Use `hpack-encoder-set-table-size` and `hpack-decoder-set-table-size` when the
+peer's table-size setting changes. The encoder emits the required leading
+table-size updates, including the two-update sequence required when both an
+intermediate minimum and a final size must be signaled.
+
+For transports that deliver a header block in fragments, use
+`hpack-decoder-feed` for each octet vector and `hpack-decoder-finish` when the
+block boundary is known. The dynamic table is committed only by a successful
+`finish`; malformed or incomplete input remains buffered for another fragment,
+and `hpack-decoder-abort` discards it.
+
+## Header representations
+
+`make-hpack-header` accepts `:representation` values of `:auto`, `:indexed`,
+`:incremental-indexing`, `:without-indexing`, and `:never-indexed`.
 
 ```lisp
-(hpack-codec:hpack-encode-integer 1337 5 0)   ; => #(31 154 10)
+(hpack-codec:make-hpack-header
+ :name "authorization"
+ :value "opaque-value"
+ :representation :never-indexed)
+```
+
+`:auto` uses an indexed representation for an exact table match and incremental
+indexing for a new field. The explicit modes let callers control indexing for
+sensitive or non-reusable values. Decoding preserves the representation on each
+returned `hpack-header`.
+
+## Limits and errors
+
+Both constructors accept limits for block bytes, header-list bytes, field
+count, string length, and dynamic-table size:
+
+```lisp
+(hpack-codec:make-hpack-decoder
+ :maximum-table-size 4096
+ :maximum-block-size (* 4 1024 1024)
+ :maximum-header-list-size (* 8 1024 1024)
+ :maximum-field-count 4096
+ :maximum-string-length (* 1024 1024))
+```
+
+Malformed HPACK input signals `hpack-decoding-error`. A validly formed input
+that exceeds a configured resource bound signals `hpack-limit-error`; both are
+subtypes of `hpack-codec-error` and expose message, operation, and detail
+readers. Decoder table changes are committed only after a complete block has
+decoded successfully, so a failed block does not partially update dynamic
+state.
+
+## Primitive codecs
+
+The lower-level APIs operate on octet vectors and return fresh octet vectors.
+
+```lisp
+(hpack-codec:hpack-huffman-encode octets)
+(hpack-codec:hpack-huffman-decode encoded-octets)
+(hpack-codec:hpack-encode-integer 1337 5 0)
 (hpack-codec:hpack-read-integer #(31 154 10) 0 5)
-;; => 1337, 3
+(hpack-codec:hpack-encode-string octets :huffman :auto)
+(hpack-codec:hpack-read-string encoded-octets 0)
 ```
 
-## API
-
-| Operation | Purpose |
-| --- | --- |
-| `hpack-huffman-encode` | Encode octets with the RFC 7541 Appendix B Huffman table |
-| `hpack-huffman-decode` | Decode Huffman octets, rejecting EOS and malformed padding |
-| `hpack-encode-integer` | Encode a prefixed integer with the given prefix width and flags |
-| `hpack-read-integer` | Decode a prefixed integer, returning the value and next position |
-| `hpack-codec-error` | Condition signalled for malformed input, with `message`, `operation` and `detail` readers |
-
-`hpack-codec-error` carries the same three slots as the protocol-error
-conditions in the HTTP libraries that consume this kit, so a caller can
-translate one into the other without losing the diagnostic payload.
+The Huffman codec rejects EOS symbols and malformed padding. The integer codec
+validates prefix widths and truncation, enforcing a 32-bit maximum by default;
+callers can provide a larger explicit maximum for standalone integer coding.
 
 ## Conformance
 
-The Huffman codec is checked against the worked examples in RFC 7541 Appendix
-C — C.4.1 (`www.example.com`) and C.4.2 (`no-cache`) — and against a round
-trip over all 256 octet values. The integer codec is checked against C.1.1,
-C.1.2 and C.1.3, and round trips every prefix width from one to eight bits.
-
-Decoding rejects an unknown code, an embedded EOS symbol, padding longer than
-seven bits, and padding that is not a prefix of the EOS code. The integer
-decoder rejects truncated input and values wider than 32 bits.
+The test suite covers the RFC 7541 static table and request examples, including
+the exact Appendix C.3 and C.4 byte sequences; all four field representations;
+dynamic-table insertion, lookup, eviction, and size updates; raw and Huffman
+strings; arbitrary octets; malformed indices, truncation, illegal updates, and
+transactional rollback; and encoder/decoder resource limits.
 
 ## License
 
