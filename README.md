@@ -103,6 +103,7 @@ when it otherwise matches a table entry or has an explicit representation.
 ```lisp
 (hpack-codec:hpack-encode-static-header-block
  '((":method" . "GET")
+   ("authorization" . "Bearer example-token")
    ("x-trace-id" . "opaque-value"))
  :huffman :auto
  :sensitive-predicate
