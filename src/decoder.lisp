@@ -13,27 +13,46 @@
       (%hpack-decoding-error "An HPACK table index is invalid." condition))))
 
 (defun %hpack-read-literal* (octets position table prefix-bits representation
-                              maximum-string-length)
+                              maximum-string-length maximum-header-bytes
+                              current-header-list-size)
   (multiple-value-bind (name-index position)
       (handler-case
           (hpack-read-integer octets position prefix-bits)
         (hpack-codec-error (condition)
           (%hpack-decoding-error "An HPACK literal name index is invalid."
                                  condition)))
-    (let ((name nil))
-      (if (zerop name-index)
-          (multiple-value-bind (decoded-name next-position ignored-huffman)
-              (hpack-read-string octets position
-                                 :maximum-length maximum-string-length)
-            (declare (ignore ignored-huffman))
-            (setf name decoded-name
-                  position next-position))
-          (let ((entry (%hpack-decoder-table-entry table name-index)))
-            (setf name (hpack-table-entry-name entry))))
-      (multiple-value-bind (value next-position)
-          (hpack-read-string octets position
-                             :maximum-length maximum-string-length)
-        (values name value next-position representation)))))
+    (let ((remaining-header-bytes
+            (- maximum-header-bytes current-header-list-size 32)))
+      (when (minusp remaining-header-bytes)
+        (%hpack-block-limit-error
+         "The HPACK header list exceeds its limit."
+         :hpack-header-block
+         maximum-header-bytes))
+      (let ((name nil))
+        (if (zerop name-index)
+            (multiple-value-bind (decoded-name next-position ignored-huffman)
+                (hpack-read-string
+                 octets position
+                 :maximum-length
+                 (min maximum-string-length remaining-header-bytes))
+              (declare (ignore ignored-huffman))
+              (setf name decoded-name
+                    position next-position))
+            (let ((entry (%hpack-decoder-table-entry table name-index)))
+              (setf name (hpack-table-entry-name entry))))
+        (let ((remaining-value-bytes
+                (- remaining-header-bytes (length name))))
+          (when (minusp remaining-value-bytes)
+            (%hpack-block-limit-error
+             "The HPACK header list exceeds its limit."
+             :hpack-header-block
+             maximum-header-bytes))
+          (multiple-value-bind (value next-position)
+              (hpack-read-string
+               octets position
+               :maximum-length
+               (min maximum-string-length remaining-value-bytes))
+            (values name value next-position representation)))))))
 
 (defun %hpack-read-table-size-update (octets position)
   (handler-case
@@ -61,10 +80,12 @@
        next-position))))
 
 (defun %hpack-decode-literal-field
-    (octets position table prefix-bits representation insert-p maximum-string-length)
+    (octets position table prefix-bits representation insert-p
+     maximum-string-length maximum-header-bytes header-list-size)
   (multiple-value-bind (name value next-position ignored-representation)
       (%hpack-read-literal* octets position table prefix-bits representation
-                            maximum-string-length)
+                            maximum-string-length maximum-header-bytes
+                            header-list-size)
     (declare (ignore ignored-representation))
     (when insert-p
       (hpack-table-insert table name value))
@@ -90,15 +111,17 @@
     (values :table-size maximum-size next-position)))
 
 (defun %hpack-decode-literal-one
-    (octets position table decoder prefix-bits representation insert-p)
+    (octets position table decoder prefix-bits representation insert-p
+     max-header-bytes header-list-size)
   (multiple-value-bind (header next-position)
       (%hpack-decode-literal-field
        octets position table prefix-bits representation insert-p
-       (hpack-decoder-maximum-string-length decoder))
+       (hpack-decoder-maximum-string-length decoder)
+       max-header-bytes header-list-size)
     (values :header header next-position)))
 
 (defun %hpack-decode-one
-    (octets position table decoder)
+    (octets position table decoder max-header-bytes header-list-size)
   (let ((first (aref octets position)))
     (cond
       ((logbitp 7 first)
@@ -107,13 +130,16 @@
        (%hpack-decode-table-size-one octets position table decoder))
       ((= (logand first #xc0) #x40)
        (%hpack-decode-literal-one
-        octets position table decoder 6 :incremental-indexing t))
+        octets position table decoder 6 :incremental-indexing t
+        max-header-bytes header-list-size))
       ((= (logand first #xf0) #x10)
        (%hpack-decode-literal-one
-        octets position table decoder 4 :never-indexed nil))
+        octets position table decoder 4 :never-indexed nil
+        max-header-bytes header-list-size))
       (t
        (%hpack-decode-literal-one
-        octets position table decoder 4 :without-indexing nil)))))
+        octets position table decoder 4 :without-indexing nil
+        max-header-bytes header-list-size)))))
 
 (defun %hpack-decode-block-step
     (decoder octets table position headers header-seen-p size-updates
@@ -127,7 +153,8 @@
         with current-field-count = field-count
         while (< current-position (length octets))
         do (multiple-value-bind (kind object next-position)
-               (%hpack-decode-one octets current-position table decoder)
+               (%hpack-decode-one octets current-position table decoder
+                                  max-header-bytes current-header-list-size)
              (setf current-position next-position)
              (if (eq kind :table-size)
                  (progn
@@ -174,9 +201,9 @@
 (defun hpack-decode-header-block (decoder octets &rest arguments)
   "Decode OCTETS using DECODER and return an ordered list of HPACK headers.
 
-MAX-FIELDS and MAX-HEADER-BYTES may tighten the decoder's configured limits for
-this call. Header-name validation is opt-in because HPACK encodes octets; set
-:VALIDATE-HEADER-NAMES for HTTP/2 field-name validation."
+MAX-FIELDS and MAX-HEADER-BYTES may tighten the decoder limits for this call.
+:VALIDATE-HEADER-NAMES can enable validation for this call, but cannot disable
+validation configured on DECODER."
   (%hpack-check-keywords
    arguments '(:max-fields :max-header-bytes :validate-header-names)
    :hpack-decode)
@@ -191,6 +218,8 @@ this call. Header-name validation is opt-in because HPACK encodes octets; set
             (getf arguments :max-header-bytes
                   (hpack-decoder-maximum-header-list-size decoder))
             :max-header-bytes))
+         (call-validate-header-names
+           (getf arguments :validate-header-names nil))
          (max-fields
            (min call-max-fields
                 (hpack-decoder-maximum-field-count decoder)))
@@ -198,13 +227,13 @@ this call. Header-name validation is opt-in because HPACK encodes octets; set
            (min call-max-header-bytes
                 (hpack-decoder-maximum-header-list-size decoder)))
          (validate-header-names
-           (getf arguments :validate-header-names
-                 (hpack-decoder-validate-header-names decoder))))
-    (unless (member validate-header-names '(nil t) :test #'eq)
+           (or call-validate-header-names
+               (hpack-decoder-validate-header-names decoder))))
+    (unless (member call-validate-header-names '(nil t) :test #'eq)
       (%hpack-block-error
        "The HPACK header-name validation option must be boolean."
        :hpack-decode
-       validate-header-names))
+       call-validate-header-names))
     (handler-case
         (multiple-value-bind (headers table)
             (%hpack-decode-block decoder octets max-fields max-header-bytes
@@ -246,15 +275,16 @@ successfully decodes the accumulated block."
                  octets)))
     new-size))
 
-(defun hpack-decoder-finish (decoder)
-  "Decode the accumulated fragments and clear them after success.
+(defun hpack-decoder-finish (decoder &rest arguments)
+  "Decode buffered fragments, clearing them only after success.
 
-When decoding fails, the fragments remain buffered so the caller can inspect
-the condition and either provide more input or call HPACK-DECODER-ABORT."
+Accepts the same call-specific limits and validation option as
+HPACK-DECODE-HEADER-BLOCK. Failed decoding leaves the fragments buffered."
   (%ensure-decoder decoder)
-  (let ((headers (hpack-decode-header-block
-                  decoder
-                  (hpack-decoder-pending-octets decoder))))
+  (let ((headers (apply #'hpack-decode-header-block
+                        decoder
+                        (hpack-decoder-pending-octets decoder)
+                        arguments)))
     (setf (hpack-decoder-pending-octets decoder)
           (make-array 0 :element-type '(unsigned-byte 8)))
     headers))

@@ -174,15 +174,14 @@
                  :message "An HPACK string payload is truncated."
                  :operation :hpack-string
                  :detail position))
-        (let* ((payload (subseq octets payload-position
-                                (+ payload-position payload-length)))
-               (huffman (logbitp 7 first))
+        (let* ((huffman (logbitp 7 first))
                (value
                  (if huffman
                      (handler-case
-                         (hpack-huffman-decode
-                          payload
-                          :maximum-length maximum-length)
+                         (%hpack-huffman-decode-range
+                          octets payload-position
+                          (+ payload-position payload-length)
+                          maximum-length)
                        (hpack-limit-error (condition)
                          (error condition))
                        (hpack-codec-error (condition)
@@ -196,7 +195,13 @@
                           "The HPACK string exceeds its length limit."
                           :hpack-string
                           maximum-length))
-                       (%hpack-copy-octets payload)))))
+                       (let ((value
+                               (make-array payload-length
+                                           :element-type '(unsigned-byte 8))))
+                         (replace value octets
+                                  :start2 payload-position
+                                  :end2 (+ payload-position payload-length))
+                         value)))))
           (values value (+ payload-position payload-length) huffman))))))
 (defun %hpack-header-name-character-p (code)
   (or (<= (char-code #\0) code (char-code #\9))
@@ -205,6 +210,9 @@
               :test #'=)))
 
 (defun hpack-valid-header-name-p (name)
+  "Return whether NAME is a lowercase ASCII token with an optional leading colon.
+
+This checks syntax only; it does not validate pseudo-header names or ordering."
   (and (or (stringp name) (vectorp name))
        (plusp (length name))
        (let* ((first (if (stringp name)

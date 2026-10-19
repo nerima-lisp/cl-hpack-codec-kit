@@ -73,6 +73,17 @@
           (expect decoded :to-equalp (ascii "www.example.com"))
           (expect position :to-equalp (length encoded))
           (expect encoded-huffman :to-equalp huffman)))))
+  (it "decodes a Huffman payload from the selected octet range"
+    (let* ((encoded (hpack-huffman-encode (ascii "www.example.com")))
+           (input (make-array (+ (length encoded) 2)
+                              :element-type '(unsigned-byte 8)))
+           (end (1+ (length encoded))))
+      (setf (aref input 0) #xff
+            (aref input end) 0)
+      (replace input encoded :start1 1)
+      (expect (hpack-codec::%hpack-huffman-decode-range input 1 end nil)
+              :to-equalp
+              (ascii "www.example.com"))))
 
   (it "supports arbitrary octets in a raw literal"
     (let ((input (octets 0 #x7f #x80 #xff)))
@@ -390,7 +401,7 @@
       (expect (hpack-decoder-buffered-size decoder) :to-equalp 0)
       (expect (hpack-table-count (hpack-decoder-table decoder)) :to-equalp 1)))
 
-  (it "retains incomplete input and can abort it"
+  (it "retains failed fragments and applies finish options"
     (let ((decoder (make-hpack-decoder)))
       (hpack-decoder-feed decoder (octets #x40 #x01 #x61))
       (signals hpack-decoding-error
@@ -398,7 +409,24 @@
       (expect (hpack-decoder-buffered-size decoder) :to-equalp 3)
       (expect (hpack-table-count (hpack-decoder-table decoder)) :to-equalp 0)
       (expect (eq (hpack-decoder-abort decoder) decoder) :to-equalp t)
-      (expect (hpack-decoder-buffered-size decoder) :to-equalp 0)))
+      (expect (hpack-decoder-buffered-size decoder) :to-equalp 0))
+    (let ((decoder (make-hpack-decoder)))
+      (hpack-decoder-feed decoder (octets #x82))
+      (signals hpack-limit-error
+        (hpack-decoder-finish decoder :max-fields 1 :max-header-bytes 41))
+      (expect (hpack-decoder-buffered-size decoder) :to-equalp 1)
+      (expect (header-pairs
+               (hpack-decoder-finish
+                decoder :max-fields 1 :max-header-bytes 42))
+              :to-equalp
+              (list (list (ascii ":method") (ascii "GET"))))
+      (expect (hpack-decoder-buffered-size decoder) :to-equalp 0))
+    (let ((decoder (make-hpack-decoder)))
+      (hpack-decoder-feed decoder (octets #x00 #x01 #x58 #x01 #x79))
+      (signals hpack-decoding-error
+        (hpack-decoder-finish decoder :validate-header-names t))
+      (expect (hpack-decoder-buffered-size decoder) :to-equalp 5)
+      (hpack-decoder-abort decoder)))
 
   (it "rejects fragments beyond the block limit before buffering them"
     (let ((decoder (make-hpack-decoder :maximum-block-size 2)))
@@ -466,11 +494,14 @@
 (describe "HPACK Phase 3a APIs"
   (it "validates HTTP/2 header names when enabled"
     (expect (hpack-valid-header-name-p ":method") :to-equalp t)
+    (expect (hpack-valid-header-name-p ":foo") :to-equalp t)
     (expect (hpack-valid-header-name-p "content-type") :to-equalp t)
     (expect (hpack-valid-header-name-p "Content-Type") :to-equalp nil)
     (expect (hpack-valid-header-name-p "bad name") :to-equalp nil)
     (expect (hpack-valid-header-name-p (vector #\x)) :to-equalp nil)
-    (let ((block (octets #x00 #x01 #x58 #x01 #x79)))
+    (let ((block (octets #x00 #x01 #x58 #x01 #x79))
+          (pseudo-block
+            (octets #x00 #x04 #x3a #x66 #x6f #x6f #x01 #x78)))
       (expect (length (hpack-decode-header-block (make-hpack-decoder) block))
               :to-equalp
               1)
@@ -482,7 +513,19 @@
       (signals hpack-decoding-error
         (hpack-decode-header-block
          (make-hpack-decoder :validate-header-names t)
-         block))))
+         block))
+      (signals hpack-decoding-error
+        (hpack-decode-header-block
+         (make-hpack-decoder :validate-header-names t)
+         block
+         :validate-header-names nil))
+      (expect
+       (header-pairs
+        (hpack-decode-header-block
+         (make-hpack-decoder :validate-header-names t)
+         pseudo-block))
+       :to-equalp
+       (list (list (ascii ":foo") (ascii "x"))))))
 
   (it "applies per-call decode limits without changing decoder defaults"
     (let* ((decoder (make-hpack-decoder
@@ -505,6 +548,12 @@
         (hpack-decode-header-block decoder three-fields :max-fields 3))
       (signals hpack-limit-error
         (hpack-decode-header-block decoder one-field :max-header-bytes 41))
+      (expect (length (hpack-decode-header-block
+                       decoder one-field :max-header-bytes 42))
+              :to-equalp
+              1)
+      (signals hpack-limit-error
+        (hpack-decode-header-block decoder two-fields :max-header-bytes 83))
       (expect (hpack-decoder-maximum-header-list-size decoder)
               :to-equalp
               84)
@@ -513,9 +562,19 @@
               :to-equalp
               1)
       (signals hpack-limit-error
+        (hpack-decode-header-block decoder large-field-block
+                                   :max-header-bytes 100))
+      (signals hpack-limit-error
         (hpack-decode-header-block
-         decoder large-field-block
-         :max-header-bytes 100))
+         (make-hpack-decoder)
+         large-field-block
+         :max-header-bytes 85))
+      (expect (length (hpack-decode-header-block
+                       (make-hpack-decoder)
+                       large-field-block
+                       :max-header-bytes 86))
+              :to-equalp
+              1)
       (expect (length (hpack-decode-header-block decoder one-field))
               :to-equalp
               1)))
@@ -542,7 +601,7 @@
       (expect (hpack-table-count (hpack-encoder-table encoder)) :to-equalp 0)
       (expect (hpack-table-count (hpack-decoder-table decoder)) :to-equalp 0)))
 
-  (it "encodes only static matches as indexed without retaining state"
+  (it "encodes only static matches and applies limits without retaining state"
     (let* ((static-header (make-hpack-header :name ":method" :value "GET"))
            (literal-header
              (make-hpack-header :name "x"
@@ -590,7 +649,38 @@
                 :indexed)
         (expect (hpack-table-count (hpack-decoder-table decoder))
                 :to-equalp
-                0))))
+                0))
+      (signals hpack-limit-error
+        (hpack-encode-static-header-block
+         (list (cons "x" "y") (cons "a" "b"))
+         :huffman nil
+         :maximum-field-count 1))
+      (signals hpack-limit-error
+        (hpack-encode-static-header-block
+         (list (cons "x" "y"))
+         :huffman nil
+         :maximum-header-list-size 33))
+      (signals hpack-limit-error
+        (hpack-encode-static-header-block
+         (list (cons "x" "yy"))
+         :huffman nil
+         :maximum-string-length 1))
+      (signals hpack-limit-error
+        (hpack-encode-static-header-block
+         (list (cons "x" "y"))
+         :huffman nil
+         :maximum-block-size 4))
+      (expect
+       (length
+        (hpack-encode-static-header-block
+         (list (cons "x" "y"))
+         :huffman nil
+         :maximum-field-count 1
+         :maximum-header-list-size 34
+         :maximum-string-length 1
+         :maximum-block-size 5))
+       :to-equalp
+       5)))
 
   (it "enforces decoder table size changes made by the local setting"
     (let ((decoder (make-hpack-decoder :maximum-table-size 128)))
@@ -617,4 +707,34 @@
       (expect (hpack-decoder-maximum-table-size decoder) :to-equalp 64)
       (expect (hpack-table-maximum-size (hpack-decoder-table decoder))
               :to-equalp
-              64))))
+              64)))
+  (it "limits Huffman literal output before committing decoder state"
+    (let* ((decoder (make-hpack-decoder))
+           (seed-block
+             (hpack-encode-header-block
+              (make-hpack-encoder :huffman nil)
+              (list (cons "seed" "state"))))
+           (oversized-block
+             (hpack-encode-header-block
+              (make-hpack-encoder :huffman t)
+              (list
+               (cons "x"
+                     (make-string 1024 :initial-element #\a))))))
+      (expect (length (hpack-decode-header-block decoder seed-block))
+              :to-equalp
+              1)
+      (expect (hpack-table-count (hpack-decoder-table decoder)) :to-equalp 1)
+      (signals hpack-limit-error
+        (hpack-decode-header-block
+         decoder oversized-block :max-header-bytes 40))
+      (expect (hpack-table-count (hpack-decoder-table decoder)) :to-equalp 1)
+      (expect
+       (hpack-table-entry-name
+        (hpack-table-lookup (hpack-decoder-table decoder) 62))
+       :to-equalp
+       (ascii "seed"))
+      (expect
+       (hpack-table-entry-value
+        (hpack-table-lookup (hpack-decoder-table decoder) 62))
+       :to-equalp
+       (ascii "state")))))

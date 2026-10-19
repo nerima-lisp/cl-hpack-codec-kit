@@ -63,18 +63,29 @@ vectors. A matching field uses the never-indexed representation."
             (hpack-encoder-pending-final-table-size encoder) nil)
       result)))
 (defun hpack-encode-static-header-block
-    (headers &key (huffman :auto) sensitive-predicate)
+    (headers &key (huffman :auto) sensitive-predicate
+                  (maximum-header-list-size *hpack-default-maximum-header-list-size*)
+                  (maximum-field-count *hpack-default-maximum-field-count*)
+                  (maximum-string-length *hpack-default-maximum-string-length*)
+                  (maximum-block-size *hpack-default-maximum-block-size*))
   "Encode HEADERS with static-table indexing and no dynamic table state."
   (unless (or (null sensitive-predicate) (functionp sensitive-predicate))
     (%hpack-block-error
      "The HPACK sensitive predicate must be a function."
      :hpack-header-block
      sensitive-predicate))
-  (let* ((headers
+  (let* ((maximum-header-list-size
+           (%hpack-ensure-limit maximum-header-list-size
+                                :maximum-header-list-size))
+         (maximum-field-count
+           (%hpack-ensure-limit maximum-field-count :maximum-field-count))
+         (maximum-string-length
+           (%hpack-ensure-limit maximum-string-length :maximum-string-length))
+         (maximum-block-size
+           (%hpack-ensure-limit maximum-block-size :maximum-block-size))
+         (headers
            (%hpack-normalize-headers
-            headers
-            *hpack-default-maximum-header-list-size*
-            *hpack-default-maximum-field-count*))
+            headers maximum-header-list-size maximum-field-count))
          (table (make-hpack-table :maximum-size 0))
          (huffman (%hpack-ensure-huffman-option huffman))
          (headers
@@ -95,32 +106,18 @@ vectors. A matching field uses the never-indexed representation."
                    (setf representation
                          (if exact-index :indexed :without-indexing)))
                   ((eq representation :incremental-indexing)
-                   (setf representation :without-indexing))
-                  ((eq representation :indexed)
-                   (unless exact-index
-                     (%hpack-block-error
-                      "An indexed static HPACK representation requires an exact static-table match."
-                      :hpack-header
-                      header)))
-                  ((not (member representation
-                                '(:without-indexing :never-indexed)
-                                :test #'eq))
-                   (%hpack-block-error
-                    "Unknown HPACK header representation."
-                    :hpack-header
-                    representation)))
+                   (setf representation :without-indexing)))
                 (setf (hpack-header-representation header) representation)
                 header))
             headers))
          (pieces
            (loop for header in headers
                  collect (%hpack-encode-header
-                          table header huffman
-                          *hpack-default-maximum-string-length*)))
+                          table header huffman maximum-string-length)))
          (result (%hpack-append-octets pieces)))
-    (when (> (length result) *hpack-default-maximum-block-size*)
+    (when (> (length result) maximum-block-size)
       (%hpack-block-limit-error
        "The HPACK header block exceeds its limit."
        :hpack-header-block
-       *hpack-default-maximum-block-size*))
+       maximum-block-size))
     result))

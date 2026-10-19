@@ -34,12 +34,14 @@
 
 (defparameter *hpack-huffman-tree* (%hpack-build-huffman-tree))
 
-(defun hpack-huffman-decode (octets &key maximum-length)
-  "Decode OCTETS from the HPACK Huffman code table.
-
-Signals HPACK-CODEC-ERROR on an unknown code, on an embedded EOS symbol, and
-on padding that is longer than seven bits or is not a prefix of the EOS code."
-  (%hpack-ensure-octets octets :hpack-huffman)
+(defun %hpack-huffman-decode-range (octets start end maximum-length)
+  (unless (and (integerp start)
+               (integerp end)
+               (<= 0 start end (length octets)))
+    (error 'hpack-codec-error
+           :message "The HPACK Huffman input range is invalid."
+           :operation :hpack-huffman
+           :detail (list start end)))
   (unless (null maximum-length)
     (%hpack-ensure-limit maximum-length :huffman-maximum-length))
   (let ((node *hpack-huffman-tree*)
@@ -47,7 +49,8 @@ on padding that is longer than seven bits or is not a prefix of the EOS code."
                             :adjustable t :fill-pointer 0))
         (padding-bits 0)
         (padding-value 0))
-    (loop for octet across octets
+    (loop for position from start below end
+          for octet = (aref octets position)
           do (loop for bit-position downfrom 7 to 0
                    for bit = (if (logbitp bit-position octet) 1 0)
                    do (let ((next (if (zerop bit)
@@ -94,6 +97,13 @@ on padding that is longer than seven bits or is not a prefix of the EOS code."
                             :element-type '(unsigned-byte 8))))
       (replace copy result)
       copy)))
+(defun hpack-huffman-decode (octets &key maximum-length)
+  "Decode OCTETS from the HPACK Huffman code table.
+
+Signals HPACK-CODEC-ERROR on an unknown code, on an embedded EOS symbol, and
+on padding that is longer than seven bits or is not a prefix of the EOS code."
+  (%hpack-ensure-octets octets :hpack-huffman)
+  (%hpack-huffman-decode-range octets 0 (length octets) maximum-length))
 
 (defun hpack-huffman-encode (octets &key maximum-length)
   "Encode OCTETS with the HPACK Huffman code table.
