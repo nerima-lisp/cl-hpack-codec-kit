@@ -1,10 +1,20 @@
 # Changelog
 
-All notable changes to this project are documented in this file.
+## [1.1.0]
+
+### Added
+
+- Stateless static-table header-block encoding and a per-call sensitive-field
+  predicate for stateful and static-only encoding.
+- Per-call decoder limits, opt-in HTTP/2 header-name validation, and the public
+  `hpack-valid-header-name-p` predicate.
+
+### Documentation
+
+- Expanded the public API guide for static-only encoding, per-call decoding
+  limits, header-name validation, and the decoder table-size setting.
 
 ## [1.0.0]
-
-Initial release.
 
 ### Added
 
