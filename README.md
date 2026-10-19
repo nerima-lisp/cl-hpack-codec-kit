@@ -1,5 +1,7 @@
 # cl-hpack-codec-kit
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 `cl-hpack-codec-kit` is a dependency-free Common Lisp implementation of the
 HPACK header compression format specified by [RFC 7541](https://www.rfc-editor.org/rfc/rfc7541.html).
 It provides the static table, per-context dynamic tables, all four header-field
@@ -47,6 +49,8 @@ one octet; characters above `#xFF` are rejected.
 ```
 
 The encoder and decoder retain their own dynamic-table state between blocks.
+Decoder table changes are committed only after a complete block decodes
+successfully, so a failed block does not partially update dynamic state.
 **Encoder side:** when the peer sends `SETTINGS_HEADER_TABLE_SIZE`, pass that
 value to your `hpack-encoder-set-table-size`; it limits your outbound encoder's
 table and queues an update for the next block. **Decoder side:** when you send
@@ -64,8 +68,12 @@ as a complete block. A successful finish clears the buffered bytes and commits
 table changes. A failed finish leaves the fragments buffered. If framing shows
 that more fragments belong to that same incomplete block, feed those fragments
 to the same decoder, then call `hpack-decoder-finish` after framing marks the
-complete boundary. If framing confirms that the block is complete, call
-`hpack-decoder-abort` after the error before reading another block; the
+complete boundary. `hpack-decoder-finish` accepts the same per-call
+`:max-fields`, `:max-header-bytes`, and `:validate-header-names` options as
+`hpack-decode-header-block`; pass them on the finish call that completes the
+assembled block. If framing confirms that the block is complete, call
+`hpack-decoder-abort` after the error to discard its buffered fragments before
+reading another block. The same decoder can then accept a new block; the
 condition does not distinguish a truncated block from malformed input.
 
 ## Header representations
@@ -94,6 +102,9 @@ indexed representation; other fields use non-indexing literals. Explicit
 `:incremental-indexing` becomes a non-indexing literal.
 An explicit `:indexed` representation requires an exact static-table match;
 otherwise the encoder signals `hpack-codec-error`.
+The static-only encoder accepts `:maximum-header-list-size`,
+`:maximum-field-count`, `:maximum-string-length`, and `:maximum-block-size`,
+using the same defaults as the stateful encoder.
 
 Both `hpack-encode-header-block` and `hpack-encode-static-header-block` accept a
 `:sensitive-predicate`. The function receives each normalized name and value as
@@ -116,12 +127,14 @@ when it otherwise matches a table entry or has an explicit representation.
 ## HTTP/2 header names and per-call decode limits
 
 Set `:validate-header-names t` on `make-hpack-decoder` to validate every decoded
-field name, or pass `:validate-header-names` to one
-`hpack-decode-header-block` call to override the decoder's setting for that
-block. Validation is opt-in so generic HPACK users retain the existing
-octet-level behavior.
-`hpack-valid-header-name-p` exposes the same lowercase HTTP/2 token check for
-application code; pseudo-header names may start with one colon.
+field name, or pass `:validate-header-names t` to one
+`hpack-decode-header-block` call to enable validation for that block. A
+per-call `nil` cannot disable validation enabled on the decoder. Validation is
+opt-in so generic HPACK users retain the existing octet-level behavior.
+`hpack-valid-header-name-p` checks lowercase ASCII token syntax and allows one
+leading colon. This syntax check accepts names such as `:foo`; it does not
+check whether a pseudo-header name is defined, required, or correctly ordered.
+The HTTP/2 layer using this codec must validate those protocol semantics.
 
 ```lisp
 (hpack-codec:hpack-decode-header-block

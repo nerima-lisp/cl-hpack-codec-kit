@@ -74,4 +74,7 @@
    #:hpack-decoder-feed
    #:hpack-decoder-finish
    #:hpack-decoder-abort
-   #:hpack-decode-header-block #:hpack-valid-header-name-p #:hpack-encode-static-header-block #:hpack-decoder-validate-header-names))
+   #:hpack-decode-header-block
+   #:hpack-valid-header-name-p
+   #:hpack-encode-static-header-block
+   #:hpack-decoder-validate-header-names))
