@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.1.1]
+
+### Fixed
+
+- Added a Nix check that runs the ASDF test suite. The green v1.1.0 CI runs did
+  not execute tests because the flake had no `checks` output.
+- Applied per-call decoder header-list limits before copying raw strings, added
+  call-specific options to fragmented decoding, and kept configured header-name
+  validation enabled for every call.
+- Added configurable resource limits to static-only encoding and removed
+  duplicate representation checks.
+
+### Documentation
+
+- Restored the MIT license badge and the decoder's successful-block commit
+  guarantee. Clarified that pseudo-header protocol semantics belong to the
+  HTTP/2 layer using the codec.
+
 ## [1.1.0]
 
 ### Added

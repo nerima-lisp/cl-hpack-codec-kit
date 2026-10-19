@@ -36,7 +36,7 @@
         system: pkgs: {
           default = pkgs.stdenvNoCC.mkDerivation {
             pname = "cl-hpack-codec-kit";
-            version = "1.1.0";
+            version = "1.1.1";
             src = self;
             dontBuild = true;
             installPhase = ''
@@ -50,6 +50,40 @@
               description = "RFC 7541 Huffman and prefixed-integer codecs shared by HPACK and QPACK";
               license = pkgs.lib.licenses.mit;
             };
+          };
+        }
+      );
+
+      checks = forEachSystem (
+        system: pkgs:
+        let
+          clWeave = cl-weave.packages.${system}.default;
+        in
+        {
+          test = pkgs.stdenvNoCC.mkDerivation {
+            pname = "cl-hpack-codec-kit-tests";
+            version = "1.1.1";
+            src = self;
+            nativeBuildInputs = [
+              pkgs.sbcl
+              clWeave
+            ];
+            dontConfigure = true;
+            buildPhase = ''
+              runHook preBuild
+              export HOME="$TMPDIR/home"
+              mkdir -p "$HOME"
+              export CL_SOURCE_REGISTRY="$PWD//:${clWeave}/share/common-lisp/source//"
+              sbcl --noinform --non-interactive \
+                --eval '(require :asdf)' \
+                --eval '(asdf:test-system "cl-hpack-codec-kit")'
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              mkdir -p "$out"
+              runHook postInstall
+            '';
           };
         }
       );
