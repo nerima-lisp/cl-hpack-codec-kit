@@ -198,3 +198,30 @@
                           maximum-length))
                        (%hpack-copy-octets payload)))))
           (values value (+ payload-position payload-length) huffman))))))
+(defun %hpack-header-name-character-p (code)
+  (or (<= (char-code #\0) code (char-code #\9))
+      (<= (char-code #\a) code (char-code #\z))
+      (member code '(33 35 36 37 38 39 42 43 45 46 94 95 96 124 126)
+              :test #'=)))
+
+(defun hpack-valid-header-name-p (name)
+  (and (or (stringp name) (vectorp name))
+       (plusp (length name))
+       (let* ((first (if (stringp name)
+                         (char-code (char name 0))
+                         (aref name 0)))
+              (valid-first-p (and (integerp first) (<= 0 first 127)))
+              (start (if (and valid-first-p
+                              (= first (char-code #\:)))
+                         1
+                         0))
+              (length (length name)))
+         (and valid-first-p
+              (< start length)
+              (loop for index from start below length
+                    for code = (if (stringp name)
+                                   (char-code (char name index))
+                                   (aref name index))
+                    always (and (integerp code)
+                                (<= 0 code 127)
+                                (%hpack-header-name-character-p code)))))))

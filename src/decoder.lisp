@@ -117,7 +117,8 @@
 
 (defun %hpack-decode-block-step
     (decoder octets table position headers header-seen-p size-updates
-     header-list-size field-count)
+     header-list-size field-count max-fields max-header-bytes
+     validate-header-names)
   (loop with current-position = position
         with current-headers = headers
         with current-header-seen-p = header-seen-p
@@ -139,17 +140,25 @@
                       "An HPACK block contains too many table size updates."))
                    (hpack-table-set-maximum-size table object)
                    (setf current-header-seen-p nil))
-                 (multiple-value-bind (new-field-count new-header-list-size)
-                     (%hpack-account-decoded-header
-                      decoder object current-field-count
-                      current-header-list-size)
-                   (setf current-headers (cons object current-headers)
-                         current-header-seen-p t
-                         current-field-count new-field-count
-                         current-header-list-size new-header-list-size))))
+                 (progn
+                   (when (and validate-header-names
+                              (not (hpack-valid-header-name-p
+                                    (hpack-header-name object))))
+                     (%hpack-decoding-error
+                      "An HPACK header name is invalid for HTTP/2."
+                      (hpack-header-name object)))
+                   (multiple-value-bind (new-field-count new-header-list-size)
+                       (%hpack-account-decoded-header
+                        object current-field-count current-header-list-size
+                        max-fields max-header-bytes)
+                     (setf current-headers (cons object current-headers)
+                           current-header-seen-p t
+                           current-field-count new-field-count
+                           current-header-list-size new-header-list-size)))))
         finally (return (values (nreverse current-headers) table))))
 
-(defun %hpack-decode-block (decoder octets)
+(defun %hpack-decode-block
+    (decoder octets max-fields max-header-bytes validate-header-names)
   (%hpack-ensure-octets octets :hpack-decode)
   (when (> (length octets) (hpack-decoder-maximum-block-size decoder))
     (%hpack-block-limit-error
@@ -159,25 +168,58 @@
   (%hpack-decode-block-step
    decoder octets
    (hpack-table-copy (hpack-decoder-table decoder))
-   0 nil nil 0 0 0))
+   0 nil nil 0 0 0
+   max-fields max-header-bytes validate-header-names))
 
-(defun hpack-decode-header-block (decoder octets)
-  "Decode OCTETS using DECODER and return an ordered list of HPACK headers."
+(defun hpack-decode-header-block (decoder octets &rest arguments)
+  "Decode OCTETS using DECODER and return an ordered list of HPACK headers.
+
+MAX-FIELDS and MAX-HEADER-BYTES may tighten the decoder's configured limits for
+this call. Header-name validation is opt-in because HPACK encodes octets; set
+:VALIDATE-HEADER-NAMES for HTTP/2 field-name validation."
+  (%hpack-check-keywords
+   arguments '(:max-fields :max-header-bytes :validate-header-names)
+   :hpack-decode)
   (%ensure-decoder decoder)
-  (handler-case
-      (multiple-value-bind (headers table)
-          (%hpack-decode-block decoder octets)
-        (setf (hpack-decoder-table decoder) table)
-        headers)
-    (hpack-limit-error (condition)
-      (error condition))
-    (hpack-decoding-error (condition)
-      (error condition))
-    (hpack-codec-error (condition)
-      (error 'hpack-decoding-error
-             :message "The HPACK header block is malformed."
-             :operation :hpack-decode
-             :detail condition))))
+  (let* ((call-max-fields
+           (%hpack-ensure-limit
+            (getf arguments :max-fields
+                  (hpack-decoder-maximum-field-count decoder))
+            :max-fields))
+         (call-max-header-bytes
+           (%hpack-ensure-limit
+            (getf arguments :max-header-bytes
+                  (hpack-decoder-maximum-header-list-size decoder))
+            :max-header-bytes))
+         (max-fields
+           (min call-max-fields
+                (hpack-decoder-maximum-field-count decoder)))
+         (max-header-bytes
+           (min call-max-header-bytes
+                (hpack-decoder-maximum-header-list-size decoder)))
+         (validate-header-names
+           (getf arguments :validate-header-names
+                 (hpack-decoder-validate-header-names decoder))))
+    (unless (member validate-header-names '(nil t) :test #'eq)
+      (%hpack-block-error
+       "The HPACK header-name validation option must be boolean."
+       :hpack-decode
+       validate-header-names))
+    (handler-case
+        (multiple-value-bind (headers table)
+            (%hpack-decode-block decoder octets max-fields max-header-bytes
+                                 validate-header-names)
+          (setf (hpack-decoder-table decoder) table)
+          headers)
+      (hpack-limit-error (condition)
+        (error condition))
+      (hpack-decoding-error (condition)
+        (error condition))
+      (hpack-codec-error (condition)
+        (error 'hpack-decoding-error
+               :message "The HPACK header block is malformed."
+               :operation :hpack-decode
+               :detail condition)))))
 
 (defun hpack-decoder-buffered-size (decoder)
   "Return the number of octets accumulated for the next header block."

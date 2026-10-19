@@ -26,11 +26,13 @@
             (:constructor %make-hpack-decoder
                 (&key table maximum-table-size maximum-block-size
                       maximum-header-list-size maximum-field-count
-                      maximum-string-length pending-octets)))
+                      maximum-string-length validate-header-names
+                      pending-octets)))
   table
   maximum-table-size
   maximum-block-size
   maximum-header-list-size
   maximum-field-count
   maximum-string-length
+  validate-header-names
   pending-octets)
