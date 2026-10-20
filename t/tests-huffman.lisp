@@ -71,3 +71,43 @@
                       (loop for code below 256 collect code))))
       (expect (hpack-huffman-decode (hpack-huffman-encode input))
               :to-equalp input))))
+(describe "hpack-huffman validation"
+  (it "rejects a prefix collision with its specific reason"
+    (expect (handler-case
+                (progn
+                  (hpack-codec::%hpack-build-huffman-tree #(0 0) #(1 2))
+                  :accepted)
+              (simple-error (condition)
+                (simple-condition-format-control condition)))
+            :to-equal
+            "HPACK Huffman table contains a prefix collision."))
+
+  (it "rejects a duplicate code with its specific reason"
+    (expect (handler-case
+                (progn
+                  (hpack-codec::%hpack-build-huffman-tree #(0 0) #(1 1))
+                  :accepted)
+              (simple-error (condition)
+                (simple-condition-format-control condition)))
+            :to-equal
+            "HPACK Huffman table contains a duplicate code."))
+
+  (it "accepts a valid custom Huffman code table"
+    (let ((root (hpack-codec::%hpack-build-huffman-tree #(0 1) #(1 1))))
+      (expect (vector
+               (hpack-codec::%hpack-huffman-node-symbol
+                (hpack-codec::%hpack-huffman-node-zero root))
+               (hpack-codec::%hpack-huffman-node-symbol
+                (hpack-codec::%hpack-huffman-node-one root)))
+              :to-equalp
+              #(0 1))))
+
+  (it "rejects an explicit EOS symbol"
+    (expect (handler-case
+                (progn
+                  (hpack-huffman-decode (octets #xff #xff #xff #xfc))
+                  :decoded)
+              (hpack-codec-error (condition)
+                (hpack-codec-error-detail condition)))
+            :to-equal
+            :huffman-eos)))
