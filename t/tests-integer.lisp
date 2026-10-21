@@ -23,7 +23,11 @@
 
   (it "rejects a prefix width outside one to eight bits"
     (signals hpack-codec-error (hpack-encode-integer 1 0 0))
-    (signals hpack-codec-error (hpack-encode-integer 1 9 0))))
+    (signals hpack-codec-error (hpack-encode-integer 1 9 0)))
+  (it "rejects NIL as an integer value"
+    (signals hpack-codec-error (hpack-encode-integer nil 5 0)))
+  (it "rejects prefix flags that overlap the value field"
+    (signals hpack-codec-error (hpack-encode-integer 1 5 1))))
 
 (describe "hpack-read-integer"
   (it "reads a value stored entirely in the prefix"
@@ -72,7 +76,16 @@
            5
            :maximum maximum)
         (expect decoded :to-equalp value)
-        (expect (plusp position))))))
+        (expect (plusp position)))))
+  (it "rejects a zero-bit prefix width"
+    (signals hpack-codec-error (hpack-read-integer (octets 0) 0 0)))
+  (it "rejects 2^62 when the maximum is 2^62 minus one"
+    (signals hpack-codec-error
+      (hpack-read-integer
+       (octets #x1f #xe1 #xff #xff #xff #xff #xff #xff #xff #x3f)
+       0
+       5
+       :maximum (1- (ash 1 62))))))
 
 (describe "prefixed integer round trip"
   (it "recovers every value it encodes across each prefix width"
