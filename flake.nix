@@ -36,7 +36,7 @@
         system: pkgs: {
           default = pkgs.stdenvNoCC.mkDerivation {
             pname = "cl-hpack-codec-kit";
-            version = "1.1.1";
+            version = "1.1.2";
             src = self;
             dontBuild = true;
             installPhase = ''
@@ -62,7 +62,7 @@
         {
           test = pkgs.stdenvNoCC.mkDerivation {
             pname = "cl-hpack-codec-kit-tests";
-            version = "1.1.1";
+            version = "1.1.2";
             src = self;
             nativeBuildInputs = [
               pkgs.sbcl
