@@ -4,7 +4,7 @@
   :description "RFC 7541 HPACK header compression codec."
   :author "nerima-lisp"
   :license "MIT"
-  :version "1.1.1"
+  :version "1.1.2"
   :depends-on ()
   :pathname "src"
   :serial t

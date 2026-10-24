@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.2]
+
+### Tests
+
+- Added regression coverage for custom Huffman-table prefix collisions and
+  duplicate codes, EOS rejection, invalid integer input, and maximum-value
+  boundaries.
+- Runtime code, public API, and wire behavior are unchanged.
+
 ## [1.1.1]
 
 ### Fixed
